@@ -107,7 +107,7 @@
     </div>
 
     <!-- Seamless Fullscreen Weather Iframe -->
-    <iframe id="weatherFrame" class="fixed inset-0 w-full h-full border-none z-10 hidden" style="height: 100dvh;" allow="geolocation"></iframe>
+    <iframe id="weatherFrame" class="fixed inset-0 w-full h-full border-none z-10 hidden" style="height: 100dvh;" allow="geolocation *; clipboard-write *"></iframe>
 
     <script>
         if ('serviceWorker' in navigator) {
@@ -220,6 +220,37 @@
                 offline.classList.remove('hidden');
             }
         }
+
+        // Apple iOS PWA / Iframe Geolocation Delegation Bridge
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'REQUEST_GEOLOCATION') {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            const frame = document.getElementById('weatherFrame');
+                            if (frame && frame.contentWindow) {
+                                frame.contentWindow.postMessage({
+                                    type: 'GEOLOCATION_SUCCESS',
+                                    latitude: pos.coords.latitude,
+                                    longitude: pos.coords.longitude
+                                }, '*');
+                            }
+                        },
+                        (err) => {
+                            const frame = document.getElementById('weatherFrame');
+                            if (frame && frame.contentWindow) {
+                                frame.contentWindow.postMessage({
+                                    type: 'GEOLOCATION_ERROR',
+                                    code: err.code,
+                                    message: err.message
+                                }, '*');
+                            }
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+                    );
+                }
+            }
+        });
 
         window.addEventListener('load', () => connectToWeather(false));
     </script>
