@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Hava Durumu</title>
+    
+    <!-- PWA & Apple Meta Tags -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#020617">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#020617">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#020617">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Hava Durumu">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        html, body {
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            background-color: #020617;
+            color: #f8fafc;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        @keyframes sunRotateGlow {
+            0% { transform: rotate(0deg) scale(1); filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.5)); }
+            50% { transform: rotate(180deg) scale(1.08); filter: drop-shadow(0 0 22px rgba(245, 158, 11, 0.85)); }
+            100% { transform: rotate(360deg) scale(1); filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.5)); }
+        }
+        @keyframes cloudSway {
+            0%, 100% { transform: translateX(-6px); }
+            50% { transform: translateX(6px); }
+        }
+        @keyframes rainFall {
+            0% { transform: translateY(-4px); opacity: 0; }
+            50% { opacity: 1; }
+            100% { transform: translateY(18px); opacity: 0; }
+        }
+        .anim-sun { animation: sunRotateGlow 6s infinite linear; }
+        .anim-cloud { animation: cloudSway 3s infinite ease-in-out; }
+        .anim-rain-1 { animation: rainFall 0.9s infinite ease-in; animation-delay: 0.1s; }
+        .anim-rain-2 { animation: rainFall 0.9s infinite ease-in; animation-delay: 0.4s; }
+        .anim-rain-3 { animation: rainFall 0.9s infinite ease-in; animation-delay: 0.7s; }
+    </style>
+</head>
+<body class="bg-slate-950 flex flex-col items-center justify-center">
+
+    <!-- Loading Splash (Güneş, Bulut, Yağmur Animasyonu) -->
+    <div id="loadingSplash" class="fixed inset-0 z-50 flex flex-col items-center justify-center p-6 bg-[#020617] transition-opacity duration-300">
+        <div class="relative w-36 h-36 flex items-center justify-center mb-6">
+            <!-- Animated Sun -->
+            <div class="anim-sun absolute -top-1 -right-1 text-amber-400">
+                <svg width="68" height="68" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="4" fill="#fbbf24"/>
+                    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+                </svg>
+            </div>
+            
+            <!-- Animated Cloud -->
+            <div class="anim-cloud absolute bottom-2 left-1 z-10">
+                <svg width="84" height="84" viewBox="0 0 24 24" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" fill="#1e293b"/>
+                </svg>
+            </div>
+
+            <!-- Falling Raindrops -->
+            <div class="absolute bottom-1 left-7 flex space-x-3 z-20">
+                <div class="anim-rain-1 w-1.5 h-3.5 bg-sky-400 rounded-full"></div>
+                <div class="anim-rain-2 w-1.5 h-3.5 bg-sky-400 rounded-full"></div>
+                <div class="anim-rain-3 w-1.5 h-3.5 bg-sky-400 rounded-full"></div>
+            </div>
+        </div>
+
+        <div class="text-center space-y-2 max-w-xs">
+            <h2 id="splashTitle" class="text-base font-bold text-white tracking-wide">Hava Durumu Bağlanıyor...</h2>
+            <p id="splashSub" class="text-xs text-sky-400">PC tünel köprüsü çözülüyor</p>
+        </div>
+    </div>
+
+    <!-- Offline State Card (Bilgisayar Kapalıyken) -->
+    <div id="offlineCard" class="hidden fixed inset-0 z-40 flex items-center justify-center p-6 bg-[#020617]">
+        <div class="max-w-sm w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-6 text-center space-y-4 shadow-2xl">
+            <div class="w-14 h-14 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl">
+                🖥️
+            </div>
+            <div class="space-y-1.5">
+                <h3 class="text-base font-bold text-white">Bilgisayar Çevrimdışı</h3>
+                <p class="text-xs text-slate-400 leading-relaxed">
+                    Hava durumu motoru bilgisayarınızda çalışmaktadır. Bilgisayarınızı açtığınızda sistem otomatik olarak bağlanacaktır.
+                </p>
+            </div>
+            <button onclick="connectToWeather(true)" class="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition active:scale-95 shadow-lg shadow-sky-600/25">
+                Yeniden Bağlanmayı Dene
+            </button>
+        </div>
+    </div>
+
+    <!-- Seamless Fullscreen Weather Iframe -->
+    <iframe id="weatherFrame" class="fixed inset-0 w-full h-full border-none z-10 hidden" style="height: 100dvh;" allow="geolocation"></iframe>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(() => {});
+            });
+        }
+
+        const NTFY_API_URL = "https://ntfy.sh/didim_weather_mert_tunnel_6f031/json?poll=1";
+        const GIST_API_URL = "https://api.github.com/gists/6f03183fd944b1e3babfd69e2e6baed0";
+        let activeServerUrl = localStorage.getItem('weather_server_tunnel_url') || '';
+
+        async function resolveLiveTunnelUrl(force = false) {
+            const now = Date.now();
+
+            // 1. Önce hafızadaki URL hala çalışıyor mu hızlıca sına (1.5 sn timeout)
+            if (!force && activeServerUrl) {
+                try {
+                    const testResp = await fetch(activeServerUrl + '/api/location', { signal: AbortSignal.timeout(1500) });
+                    if (testResp.ok) return activeServerUrl;
+                } catch (e) {
+                    // Cache'deki URL kapalı, ntfy ve Gist'e sor
+                }
+            }
+
+            // 2. ntfy.sh Anlık Pub/Sub Köprüsü (Kotasız, en hızlı)
+            try {
+                const resp = await fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                if (resp.ok) {
+                    const text = await resp.text();
+                    const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
+                    const messages = lines
+                        .map(l => { try { return JSON.parse(l); } catch(e) { return null; } })
+                        .filter(m => m && m.event === "message" && m.message);
+                    if (messages.length > 0) {
+                        const lastMsg = messages[messages.length - 1];
+                        const msg = (lastMsg.message || "").trim();
+                        if (msg.startsWith("https://") && msg.includes("trycloudflare.com")) {
+                            activeServerUrl = msg.replace(/\/+$/, '');
+                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
+                            return activeServerUrl;
+                        } else if (msg === "OFFLINE") {
+                            activeServerUrl = '';
+                            localStorage.removeItem('weather_server_tunnel_url');
+                            return null;
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            // 3. Yedek: GitHub Gist API Sorgusu
+            try {
+                const resp = await fetch(`${GIST_API_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const file = data.files && data.files["weather_tunnel.json"];
+                    if (file && file.content) {
+                        const parsed = JSON.parse(file.content);
+                        if (parsed && parsed.tunnel && parsed.tunnel.startsWith("https://")) {
+                            activeServerUrl = parsed.tunnel.trim().replace(/\/+$/, '');
+                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
+                            return activeServerUrl;
+                        } else {
+                            activeServerUrl = '';
+                            localStorage.removeItem('weather_server_tunnel_url');
+                            return null;
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            return activeServerUrl || null;
+        }
+
+        async function connectToWeather(force = false) {
+            const splash = document.getElementById('loadingSplash');
+            const offline = document.getElementById('offlineCard');
+            const frame = document.getElementById('weatherFrame');
+
+            offline.classList.add('hidden');
+            splash.classList.remove('hidden', 'opacity-0');
+
+            document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
+            document.getElementById('splashSub').innerText = 'Aktif tünel çözümleniyor';
+
+            const tunnelUrl = await resolveLiveTunnelUrl(force);
+
+            if (tunnelUrl) {
+                document.getElementById('splashTitle').innerText = 'Bağlantı Kuruldu!';
+                document.getElementById('splashSub').innerText = 'Hava durumu raporu yükleniyor...';
+
+                // Iframe yükleme tamamlanınca splash'i kapat
+                frame.src = tunnelUrl;
+                frame.onload = () => {
+                    setTimeout(() => {
+                        splash.classList.add('opacity-0');
+                        setTimeout(() => splash.classList.add('hidden'), 300);
+                        frame.classList.remove('hidden');
+                    }, 400);
+                };
+                
+                // Güvenlik zamanlayıcısı (en geç 3 saniyede göster)
+                setTimeout(() => {
+                    splash.classList.add('opacity-0');
+                    setTimeout(() => splash.classList.add('hidden'), 300);
+                    frame.classList.remove('hidden');
+                }, 3000);
+            } else {
+                splash.classList.add('hidden');
+                offline.classList.remove('hidden');
+            }
+        }
+
+        window.addEventListener('load', () => connectToWeather(false));
+    </script>
+</body>
+</html>
