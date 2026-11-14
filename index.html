@@ -199,8 +199,19 @@
                 document.getElementById('splashTitle').innerText = 'Bağlantı Kuruldu!';
                 document.getElementById('splashSub').innerText = 'Hava durumu raporu yükleniyor...';
 
+                // Cihazın kendi yerel hafızasındaki konumu al (Mert ve Rabia bağımsızlığı)
+                const savedCity = localStorage.getItem('pwa_device_city');
+                const savedLat = localStorage.getItem('pwa_device_lat');
+                const savedLon = localStorage.getItem('pwa_device_lon');
+                let locQuery = '';
+                if (savedLat && savedLon && savedCity) {
+                    locQuery = `?lat=${savedLat}&lon=${savedLon}&city=${encodeURIComponent(savedCity)}`;
+                } else if (savedCity) {
+                    locQuery = `?city=${encodeURIComponent(savedCity)}`;
+                }
+
                 // Iframe yükleme tamamlanınca splash'i kapat
-                frame.src = tunnelUrl;
+                frame.src = tunnelUrl + '/' + locQuery;
                 frame.onload = () => {
                     setTimeout(() => {
                         splash.classList.add('opacity-0');
@@ -221,9 +232,14 @@
             }
         }
 
-        // Apple iOS PWA / Iframe Geolocation Delegation Bridge
+        // Apple iOS PWA / Iframe Geolocation & Multi-User Location Sync Bridge
         window.addEventListener('message', (event) => {
-            if (event.data && event.data.type === 'REQUEST_GEOLOCATION') {
+            if (!event.data) return;
+            if (event.data.type === 'SAVE_DEVICE_LOCATION') {
+                if (event.data.city) localStorage.setItem('pwa_device_city', event.data.city);
+                if (event.data.lat) localStorage.setItem('pwa_device_lat', event.data.lat);
+                if (event.data.lon) localStorage.setItem('pwa_device_lon', event.data.lon);
+            } else if (event.data.type === 'REQUEST_GEOLOCATION') {
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(
                         (pos) => {
