@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-pwa-bridge-v1';
+const CACHE_NAME = 'weather-pwa-bridge-v2';
 const STATIC_ASSETS = [
   '/hava-durumu/',
   '/hava-durumu/manifest.json',
@@ -8,12 +8,12 @@ const STATIC_ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS).catch(() => {});
     })
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -26,13 +26,24 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  // Let network handle API and tunnel traffic
+  // Only handle GET requests
+  if (event.request.method !== 'GET') {
+    return;
+  }
+
+  const url = new URL(event.request.url);
+
+  // NEVER intercept cross-origin requests (e.g. ntfy.sh, github api, cloudflare tunnels)
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // Network first with cache fallback
   event.respondWith(
     fetch(event.request).catch(() => caches.match(event.request))
   );
