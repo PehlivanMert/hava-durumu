@@ -120,84 +120,75 @@
         const GIST_RAW_URL = "https://gist.githubusercontent.com/PehlivanMert/6f03183fd944b1e3babfd69e2e6baed0/raw/weather_tunnel.json";
         const GIST_API_URL = "https://api.github.com/gists/6f03183fd944b1e3babfd69e2e6baed0";
         let activeServerUrl = localStorage.getItem('weather_server_tunnel_url') || '';
+        let frameLoaded = false;
+
+        function getLocQuery() {
+            const savedCity = localStorage.getItem('pwa_device_city');
+            const savedLat = localStorage.getItem('pwa_device_lat');
+            const savedLon = localStorage.getItem('pwa_device_lon');
+            if (savedLat && savedLon && savedCity) {
+                return `?lat=${savedLat}&lon=${savedLon}&city=${encodeURIComponent(savedCity)}`;
+            } else if (savedCity) {
+                return `?city=${encodeURIComponent(savedCity)}`;
+            }
+            return '';
+        }
+
+        function revealFrame() {
+            if (frameLoaded) return;
+            frameLoaded = true;
+            const splash = document.getElementById('loadingSplash');
+            const frame = document.getElementById('weatherFrame');
+            if (splash) {
+                splash.classList.add('opacity-0');
+                setTimeout(() => splash.classList.add('hidden'), 150);
+            }
+            if (frame) frame.classList.remove('hidden');
+        }
+
+        // --- ULTRA HIZLI ÖN YÜKLEME (0. Milisaniye Tetikleme) ---
+        // Kullanıcı PWA'yı açtığı AN, hiçbir ağ sorgusunu beklemeden iframe'i başlat
+        const frameEl = document.getElementById('weatherFrame');
+        if (frameEl) {
+            frameEl.onload = revealFrame;
+            if (activeServerUrl) {
+                frameEl.src = activeServerUrl + '/' + getLocQuery();
+            }
+        }
 
         async function resolveLiveTunnelUrl(force = false) {
             const now = Date.now();
 
-            // 1. Önce hafızadaki URL hala çalışıyor mu hızlıca sına (3.5 sn timeout)
-            if (!force && activeServerUrl) {
-                try {
-                    const testResp = await fetch(activeServerUrl + '/api/location', { signal: AbortSignal.timeout(3500) });
-                    if (testResp.ok) return activeServerUrl;
-                } catch (e) {
-                    // Cache'deki URL kapalı, ntfy ve Gist'e sor
-                }
-            }
+            // En hızlı kotasız iki köprüyü (Gist Raw CDN ve ntfy.sh) PARALEL yarıştır
+            const pGist = fetch(`${GIST_RAW_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => (d && d.tunnel && d.tunnel.startsWith('https://')) ? d.tunnel.trim().replace(/\/+$/, '') : null)
+                .catch(() => null);
 
-            // 2. ntfy.sh Anlık Pub/Sub Köprüsü (Kotasız, en hızlı)
-            try {
-                const resp = await fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
-                if (resp.ok) {
-                    const text = await resp.text();
+            const pNtfy = fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
+                .then(r => r.ok ? r.text() : null)
+                .then(text => {
+                    if (!text) return null;
                     const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
                     const messages = lines
                         .map(l => { try { return JSON.parse(l); } catch(e) { return null; } })
                         .filter(m => m && m.event === "message" && m.message);
                     if (messages.length > 0) {
-                        const lastMsg = messages[messages.length - 1];
-                        const msg = (lastMsg.message || "").trim();
+                        const msg = (messages[messages.length - 1].message || "").trim();
                         if (msg.startsWith("https://") && msg.includes("trycloudflare.com")) {
-                            activeServerUrl = msg.replace(/\/+$/, '');
-                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
-                            return activeServerUrl;
-                        } else if (msg === "OFFLINE") {
-                            activeServerUrl = '';
-                            localStorage.removeItem('weather_server_tunnel_url');
-                            return null;
+                            return msg.replace(/\/+$/, '');
                         }
                     }
-                }
-            } catch (e) {}
+                    return null;
+                })
+                .catch(() => null);
 
-            // 3. GitHub Gist Raw CDN Köprüsü (Kotasız, ultra hızlı)
-            try {
-                const resp = await fetch(`${GIST_RAW_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
-                if (resp.ok) {
-                    const parsed = await resp.json();
-                    if (parsed && parsed.tunnel && parsed.tunnel.startsWith("https://")) {
-                        activeServerUrl = parsed.tunnel.trim().replace(/\/+$/, '');
-                        localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
-                        return activeServerUrl;
-                    } else if (parsed && parsed.tunnel === "") {
-                        activeServerUrl = '';
-                        localStorage.removeItem('weather_server_tunnel_url');
-                        return null;
-                    }
-                }
-            } catch (e) {}
+            const liveUrl = await Promise.race([
+                pGist.then(u => u || pNtfy),
+                pNtfy.then(u => u || pGist)
+            ]);
 
-            // 4. Yedek: GitHub Gist REST API Sorgusu
-            try {
-                const resp = await fetch(`${GIST_API_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    const file = data.files && data.files["weather_tunnel.json"];
-                    if (file && file.content) {
-                        const parsed = JSON.parse(file.content);
-                        if (parsed && parsed.tunnel && parsed.tunnel.startsWith("https://")) {
-                            activeServerUrl = parsed.tunnel.trim().replace(/\/+$/, '');
-                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
-                            return activeServerUrl;
-                        } else {
-                            activeServerUrl = '';
-                            localStorage.removeItem('weather_server_tunnel_url');
-                            return null;
-                        }
-                    }
-                }
-            } catch (e) {}
-
-            return activeServerUrl || null;
+            return liveUrl || activeServerUrl || null;
         }
 
         async function connectToWeather(force = false) {
@@ -206,50 +197,42 @@
             const frame = document.getElementById('weatherFrame');
 
             offline.classList.add('hidden');
-            splash.classList.remove('hidden', 'opacity-0');
 
-            document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
-            document.getElementById('splashSub').innerText = 'Aktif tünel çözümleniyor';
-
-            const tunnelUrl = await resolveLiveTunnelUrl(force);
-
-            if (tunnelUrl) {
-                document.getElementById('splashTitle').innerText = 'Bağlantı Kuruldu!';
-                document.getElementById('splashSub').innerText = 'Hava durumu raporu yükleniyor...';
-
-                // Cihazın kendi yerel hafızasındaki konumu al (Mert ve Rabia bağımsızlığı)
-                const savedCity = localStorage.getItem('pwa_device_city');
-                const savedLat = localStorage.getItem('pwa_device_lat');
-                const savedLon = localStorage.getItem('pwa_device_lon');
-                let locQuery = '';
-                if (savedLat && savedLon && savedCity) {
-                    locQuery = `?lat=${savedLat}&lon=${savedLon}&city=${encodeURIComponent(savedCity)}`;
-                } else if (savedCity) {
-                    locQuery = `?city=${encodeURIComponent(savedCity)}`;
-                }
-
-                // Iframe yükleme tamamlanınca splash'i kapat
-                let frameShown = false;
-                const revealFrame = () => {
-                    if (frameShown) return;
-                    frameShown = true;
-                    splash.classList.add('opacity-0');
-                    setTimeout(() => splash.classList.add('hidden'), 300);
-                    frame.classList.remove('hidden');
-                };
-
-                frame.onload = () => {
-                    setTimeout(revealFrame, 200);
-                };
-
-                // Güvenlik zamanlayıcısı (en geç 8 saniyede aç)
-                setTimeout(revealFrame, 8000);
-
-                frame.src = tunnelUrl + '/' + locQuery;
-            } else {
-                splash.classList.add('hidden');
-                offline.classList.remove('hidden');
+            if (!activeServerUrl || force) {
+                splash.classList.remove('hidden', 'opacity-0');
+                document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
+                document.getElementById('splashSub').innerText = 'Canlı tünel çözümleniyor';
             }
+
+            // Canlı tünel adresini arka planda doğrula / güncelle
+            const liveUrl = await resolveLiveTunnelUrl(force);
+
+            if (liveUrl) {
+                if (liveUrl !== activeServerUrl || !frame.src || frame.src.endsWith('/')) {
+                    activeServerUrl = liveUrl;
+                    localStorage.setItem('weather_server_tunnel_url', liveUrl);
+                    if (!frameLoaded) {
+                        frame.src = liveUrl + '/' + getLocQuery();
+                    }
+                }
+            } else {
+                if (!frameLoaded) {
+                    splash.classList.add('hidden');
+                    offline.classList.remove('hidden');
+                }
+            }
+
+            // 4 saniyelik güvenlik kontrolü
+            setTimeout(() => {
+                if (!frameLoaded) {
+                    if (!liveUrl) {
+                        splash.classList.add('hidden');
+                        offline.classList.remove('hidden');
+                    } else {
+                        revealFrame();
+                    }
+                }
+            }, 4000);
         }
 
         // Apple iOS PWA / Iframe Geolocation & Multi-User Location Sync Bridge
