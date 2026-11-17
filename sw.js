@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-pwa-bridge-v3';
+const CACHE_NAME = 'weather-pwa-bridge-v4';
 const STATIC_ASSETS = [
   '/hava-durumu/',
   '/hava-durumu/manifest.json',
