@@ -117,16 +117,17 @@
         }
 
         const NTFY_API_URL = "https://ntfy.sh/didim_weather_mert_tunnel_6f031/json?poll=1";
+        const GIST_RAW_URL = "https://gist.githubusercontent.com/PehlivanMert/6f03183fd944b1e3babfd69e2e6baed0/raw/weather_tunnel.json";
         const GIST_API_URL = "https://api.github.com/gists/6f03183fd944b1e3babfd69e2e6baed0";
         let activeServerUrl = localStorage.getItem('weather_server_tunnel_url') || '';
 
         async function resolveLiveTunnelUrl(force = false) {
             const now = Date.now();
 
-            // 1. Önce hafızadaki URL hala çalışıyor mu hızlıca sına (1.5 sn timeout)
+            // 1. Önce hafızadaki URL hala çalışıyor mu hızlıca sına (3.5 sn timeout)
             if (!force && activeServerUrl) {
                 try {
-                    const testResp = await fetch(activeServerUrl + '/api/location', { signal: AbortSignal.timeout(1500) });
+                    const testResp = await fetch(activeServerUrl + '/api/location', { signal: AbortSignal.timeout(3500) });
                     if (testResp.ok) return activeServerUrl;
                 } catch (e) {
                     // Cache'deki URL kapalı, ntfy ve Gist'e sor
@@ -135,7 +136,7 @@
 
             // 2. ntfy.sh Anlık Pub/Sub Köprüsü (Kotasız, en hızlı)
             try {
-                const resp = await fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                const resp = await fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
                 if (resp.ok) {
                     const text = await resp.text();
                     const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
@@ -158,9 +159,26 @@
                 }
             } catch (e) {}
 
-            // 3. Yedek: GitHub Gist API Sorgusu
+            // 3. GitHub Gist Raw CDN Köprüsü (Kotasız, ultra hızlı)
             try {
-                const resp = await fetch(`${GIST_API_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                const resp = await fetch(`${GIST_RAW_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
+                if (resp.ok) {
+                    const parsed = await resp.json();
+                    if (parsed && parsed.tunnel && parsed.tunnel.startsWith("https://")) {
+                        activeServerUrl = parsed.tunnel.trim().replace(/\/+$/, '');
+                        localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
+                        return activeServerUrl;
+                    } else if (parsed && parsed.tunnel === "") {
+                        activeServerUrl = '';
+                        localStorage.removeItem('weather_server_tunnel_url');
+                        return null;
+                    }
+                }
+            } catch (e) {}
+
+            // 4. Yedek: GitHub Gist REST API Sorgusu
+            try {
+                const resp = await fetch(`${GIST_API_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
                 if (resp.ok) {
                     const data = await resp.json();
                     const file = data.files && data.files["weather_tunnel.json"];
@@ -211,21 +229,23 @@
                 }
 
                 // Iframe yükleme tamamlanınca splash'i kapat
-                frame.src = tunnelUrl + '/' + locQuery;
-                frame.onload = () => {
-                    setTimeout(() => {
-                        splash.classList.add('opacity-0');
-                        setTimeout(() => splash.classList.add('hidden'), 300);
-                        frame.classList.remove('hidden');
-                    }, 400);
-                };
-                
-                // Güvenlik zamanlayıcısı (en geç 3 saniyede göster)
-                setTimeout(() => {
+                let frameShown = false;
+                const revealFrame = () => {
+                    if (frameShown) return;
+                    frameShown = true;
                     splash.classList.add('opacity-0');
                     setTimeout(() => splash.classList.add('hidden'), 300);
                     frame.classList.remove('hidden');
-                }, 3000);
+                };
+
+                frame.onload = () => {
+                    setTimeout(revealFrame, 200);
+                };
+
+                // Güvenlik zamanlayıcısı (en geç 8 saniyede aç)
+                setTimeout(revealFrame, 8000);
+
+                frame.src = tunnelUrl + '/' + locQuery;
             } else {
                 splash.classList.add('hidden');
                 offline.classList.remove('hidden');

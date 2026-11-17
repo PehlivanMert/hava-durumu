@@ -1,4 +1,4 @@
-const CACHE_NAME = 'weather-pwa-bridge-v2';
+const CACHE_NAME = 'weather-pwa-bridge-v3';
 const STATIC_ASSETS = [
   '/hava-durumu/',
   '/hava-durumu/manifest.json',
@@ -45,6 +45,24 @@ self.addEventListener('fetch', (event) => {
 
   // Network first with cache fallback
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200) {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+        }
+        return response;
+      })
+      .catch(async () => {
+        const cached = await caches.match(event.request);
+        if (cached) return cached;
+        if (event.request.mode === 'navigate') {
+          const cachedHome = await caches.match('/hava-durumu/');
+          if (cachedHome) return cachedHome;
+        }
+        return new Response('Çevrimdışı', { status: 503, statusText: 'Offline' });
+      })
   );
 });
