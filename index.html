@@ -100,7 +100,7 @@
                     Hava durumu motoru bilgisayarınızda çalışmaktadır. Bilgisayarınızı açtığınızda sistem otomatik olarak bağlanacaktır.
                 </p>
             </div>
-            <button onclick="connectToWeather(true)" class="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition active:scale-95 shadow-lg shadow-sky-600/25">
+            <button id="btnRetry" onclick="forceRetry()" class="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition active:scale-95 shadow-lg shadow-sky-600/25">
                 Yeniden Bağlanmayı Dene
             </button>
         </div>
@@ -112,7 +112,9 @@
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js').catch(() => {});
+                navigator.serviceWorker.register('sw.js').then((reg) => {
+                    reg.update().catch(() => {});
+                }).catch(() => {});
             });
         }
 
@@ -146,8 +148,7 @@
             if (frame) frame.classList.remove('hidden');
         }
 
-        // --- ULTRA HIZLI ÖN YÜKLEME (0. Milisaniye Tetikleme) ---
-        // Kullanıcı PWA'yı açtığı AN, hiçbir ağ sorgusunu beklemeden iframe'i başlat
+        // --- ULTRA HIZLI ÖN YÜKLEME ---
         const frameEl = document.getElementById('weatherFrame');
         if (frameEl) {
             frameEl.onload = revealFrame;
@@ -156,19 +157,24 @@
             }
         }
 
-        async function resolveLiveTunnelUrl(force = false) {
-            const now = Date.now();
+        async function fetchTunnelFromGistRaw() {
+            try {
+                const resp = await fetch(`${GIST_RAW_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(5000) });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data && data.tunnel && data.tunnel.startsWith('https://')) {
+                        return data.tunnel.trim().replace(/\/+$/, '');
+                    }
+                }
+            } catch(e) {}
+            return null;
+        }
 
-            // En hızlı kotasız iki köprüyü (Gist Raw CDN ve ntfy.sh) PARALEL yarıştır
-            const pGist = fetch(`${GIST_RAW_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
-                .then(r => r.ok ? r.json() : null)
-                .then(d => (d && d.tunnel && d.tunnel.startsWith('https://')) ? d.tunnel.trim().replace(/\/+$/, '') : null)
-                .catch(() => null);
-
-            const pNtfy = fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
-                .then(r => r.ok ? r.text() : null)
-                .then(text => {
-                    if (!text) return null;
+        async function fetchTunnelFromNtfy() {
+            try {
+                const resp = await fetch(`${NTFY_API_URL}&_t=${Date.now()}`, { signal: AbortSignal.timeout(5000) });
+                if (resp.ok) {
+                    const text = await resp.text();
                     const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
                     const messages = lines
                         .map(l => { try { return JSON.parse(l); } catch(e) { return null; } })
@@ -179,16 +185,45 @@
                             return msg.replace(/\/+$/, '');
                         }
                     }
-                    return null;
-                })
-                .catch(() => null);
+                }
+            } catch(e) {}
+            return null;
+        }
 
-            const liveUrl = await Promise.race([
+        async function fetchTunnelFromGistApi() {
+            try {
+                const resp = await fetch(`${GIST_API_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(5000) });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const file = data.files && data.files["weather_tunnel.json"];
+                    if (file && file.content) {
+                        const parsed = JSON.parse(file.content);
+                        if (parsed && parsed.tunnel && parsed.tunnel.startsWith('https://')) {
+                            return parsed.tunnel.trim().replace(/\/+$/, '');
+                        }
+                    }
+                }
+            } catch(e) {}
+            return null;
+        }
+
+        async function resolveLiveTunnelUrl(force = false) {
+            // Paralel sorgulama: Gist Raw CDN ve ntfy.sh köprüsü
+            const pGist = fetchTunnelFromGistRaw();
+            const pNtfy = fetchTunnelFromNtfy();
+
+            const fastUrl = await Promise.race([
                 pGist.then(u => u || pNtfy),
                 pNtfy.then(u => u || pGist)
             ]);
 
-            return liveUrl || activeServerUrl || null;
+            if (fastUrl) return fastUrl;
+
+            // Yedek olarak Gist REST API
+            const fallbackUrl = await fetchTunnelFromGistApi();
+            if (fallbackUrl) return fallbackUrl;
+
+            return activeServerUrl || null;
         }
 
         async function connectToWeather(force = false) {
@@ -201,38 +236,48 @@
             if (!activeServerUrl || force) {
                 splash.classList.remove('hidden', 'opacity-0');
                 document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
-                document.getElementById('splashSub').innerText = 'Canlı tünel çözümleniyor';
+                document.getElementById('splashSub').innerText = 'Canlı tünel aranıyor';
             }
 
-            // Canlı tünel adresini arka planda doğrula / güncelle
             const liveUrl = await resolveLiveTunnelUrl(force);
 
             if (liveUrl) {
-                if (liveUrl !== activeServerUrl || !frame.src || frame.src.endsWith('/')) {
-                    activeServerUrl = liveUrl;
-                    localStorage.setItem('weather_server_tunnel_url', liveUrl);
-                    if (!frameLoaded) {
-                        frame.src = liveUrl + '/' + getLocQuery();
-                    }
-                }
-            } else {
-                if (!frameLoaded) {
-                    splash.classList.add('hidden');
-                    offline.classList.remove('hidden');
+                activeServerUrl = liveUrl;
+                localStorage.setItem('weather_server_tunnel_url', liveUrl);
+                const targetSrc = liveUrl + '/' + getLocQuery();
+                if (frame.src !== targetSrc) {
+                    frame.src = targetSrc;
                 }
             }
 
-            // 4 saniyelik güvenlik kontrolü
+            // Güvenlik kontrolü (7 saniye içinde hiçbir veri gelmediyse offline göster)
             setTimeout(() => {
                 if (!frameLoaded) {
-                    if (!liveUrl) {
+                    if (!liveUrl && !activeServerUrl) {
                         splash.classList.add('hidden');
                         offline.classList.remove('hidden');
                     } else {
                         revealFrame();
                     }
                 }
-            }, 4000);
+            }, 7000);
+        }
+
+        async function forceRetry() {
+            const btn = document.getElementById('btnRetry');
+            if (btn) btn.innerText = 'Önbellek Temizlenip Bağlanılıyor...';
+            try {
+                if ('caches' in window) {
+                    const keys = await caches.keys();
+                    for (const k of keys) await caches.delete(k);
+                }
+                if ('serviceWorker' in navigator) {
+                    const regs = await navigator.serviceWorker.getRegistrations();
+                    for (const r of regs) await r.unregister();
+                }
+            } catch(e) {}
+            localStorage.removeItem('weather_server_tunnel_url');
+            window.location.href = window.location.pathname + '?_fresh=' + Date.now();
         }
 
         // Apple iOS PWA / Iframe Geolocation & Multi-User Location Sync Bridge

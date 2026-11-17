@@ -1,6 +1,5 @@
-const CACHE_NAME = 'weather-pwa-bridge-v4';
+const CACHE_NAME = 'weather-pwa-bridge-v5';
 const STATIC_ASSETS = [
-  '/hava-durumu/',
   '/hava-durumu/manifest.json',
   '/hava-durumu/icon-192.png',
   '/hava-durumu/icon-512.png',
@@ -31,38 +30,47 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Only handle GET requests
   if (event.request.method !== 'GET') {
     return;
   }
 
   const url = new URL(event.request.url);
 
-  // NEVER intercept cross-origin requests (e.g. ntfy.sh, github api, cloudflare tunnels)
+  // Cross-origin isteklerine ASLA müdahale etme (ntfy, gist, trycloudflare)
   if (url.origin !== self.location.origin) {
     return;
   }
 
-  // Network first with cache fallback
+  // HTML sayfa istekleri (navigate) HER ZAMAN güncel ağdan çekilsin
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match(event.request);
+          if (cached) return cached;
+          return new Response('Çevrimdışı', { status: 503, statusText: 'Offline' });
+        })
+    );
+    return;
+  }
+
+  // Statik varlıklar (ikonlar, manifest)
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
+    caches.match(event.request).then((cached) => {
+      return cached || fetch(event.request).then((response) => {
         if (response && response.status === 200) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      })
-      .catch(async () => {
-        const cached = await caches.match(event.request);
-        if (cached) return cached;
-        if (event.request.mode === 'navigate') {
-          const cachedHome = await caches.match('/hava-durumu/');
-          if (cachedHome) return cachedHome;
-        }
-        return new Response('Çevrimdışı', { status: 503, statusText: 'Offline' });
-      })
+      });
+    }).catch(() => new Response('Offline', { status: 503 }))
   );
 });
