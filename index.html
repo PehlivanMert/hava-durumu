@@ -114,8 +114,17 @@
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('sw.js').then((reg) => {
                     reg.update().catch(() => {});
+                    reg.unregister().catch(() => {});
+                }).catch(() => {});
+                navigator.serviceWorker.getRegistrations().then((regs) => {
+                    for (const reg of regs) reg.unregister().catch(() => {});
                 }).catch(() => {});
             });
+            if ('caches' in window) {
+                caches.keys().then((keys) => {
+                    for (const k of keys) caches.delete(k).catch(() => {});
+                }).catch(() => {});
+            }
         }
 
         const NTFY_API_URL = "https://ntfy.sh/didim_weather_mert_tunnel_6f031/json?poll=1";
@@ -157,7 +166,7 @@
             };
         }
 
-        async function pingUrl(url, timeoutMs = 1800) {
+        async function pingUrl(url, timeoutMs = 1500) {
             if (!url || !url.startsWith('https://')) return false;
             try {
                 const res = await fetch(url + '/api/location?_t=' + Date.now(), {
@@ -173,7 +182,7 @@
 
         async function fetchTunnelFromGistRaw() {
             try {
-                const resp = await fetch(`${GIST_RAW_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
+                const resp = await fetch(`${GIST_RAW_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const data = await resp.json();
                     if (data) {
@@ -187,7 +196,7 @@
 
         async function fetchTunnelFromNtfy() {
             try {
-                const resp = await fetch(`${NTFY_API_URL}&_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
+                const resp = await fetch(`${NTFY_API_URL}&_t=${Date.now()}`, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const text = await resp.text();
                     const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
@@ -211,7 +220,7 @@
 
         async function fetchTunnelFromGistApi() {
             try {
-                const resp = await fetch(`${GIST_API_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
+                const resp = await fetch(`${GIST_API_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const data = await resp.json();
                     const file = data.files && data.files["weather_tunnel.json"];
@@ -228,7 +237,18 @@
         }
 
         async function discoverLiveTunnel() {
-            // Paralel sorgulama: ntfy ve Gist
+            const wrap = (p) => p.then(res => (res && (res.url || res.isOffline)) ? res : Promise.reject());
+
+            try {
+                // Hızlı olanı al (Fast-path)
+                const fastResult = await Promise.race([
+                    wrap(fetchTunnelFromNtfy()),
+                    wrap(fetchTunnelFromGistRaw())
+                ]);
+                if (fastResult) return fastResult;
+            } catch(e) {}
+
+            // Fallback: Her ikisini bekle veya Gist API'ye sor
             const [rNtfy, rGistRaw] = await Promise.allSettled([
                 fetchTunnelFromNtfy(),
                 fetchTunnelFromGistRaw()
@@ -238,14 +258,10 @@
             let gist = rGistRaw.status === 'fulfilled' ? rGistRaw.value : null;
 
             if (!gist || !gist.url) {
-                try {
-                    gist = await fetchTunnelFromGistApi();
-                } catch(e) {}
+                try { gist = await fetchTunnelFromGistApi(); } catch(e) {}
             }
 
-            if (ntfy && ntfy.isOffline) {
-                return { isOffline: true };
-            }
+            if (ntfy && ntfy.isOffline) return { isOffline: true };
 
             let bestUrl = null;
             if (ntfy && ntfy.url && gist && gist.url) {
@@ -266,68 +282,53 @@
 
             offline.classList.add('hidden');
 
-            if (!activeServerUrl || force) {
+            // Optimistic fast launch: Eğer hafızada geçerli bir tünel URL varsa HEMEN yüklemeye başla!
+            if (!force && activeServerUrl) {
+                const targetSrc = activeServerUrl + '/' + getLocQuery();
+                if (frame.src !== targetSrc) {
+                    frame.src = targetSrc;
+                }
+            } else {
                 splash.classList.remove('hidden', 'opacity-0');
                 document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
                 document.getElementById('splashSub').innerText = 'Canlı tünel aranıyor';
             }
 
-            let resolvedUrl = null;
+            // Arka planda veya ilk açılışta canlı tüneli keşfet
+            const disco = await discoverLiveTunnel();
 
-            // 1. Stored URL hızlı kontrolü (hafızadaki URL hala ayakta mı?)
-            const storedUrl = (!force && activeServerUrl) ? activeServerUrl : null;
-            const pStoredPing = storedUrl ? pingUrl(storedUrl, 1600).then(alive => alive ? storedUrl : null) : Promise.resolve(null);
-            const pDiscovery = discoverLiveTunnel();
-
-            const storedAlive = await pStoredPing;
-            if (storedAlive) {
-                resolvedUrl = storedAlive;
-            } else {
-                const disco = await pDiscovery;
-                if (disco && disco.isOffline) {
-                    splash.classList.add('hidden');
-                    offline.classList.remove('hidden');
-                    return;
-                }
-                if (disco && disco.url) {
-                    resolvedUrl = disco.url;
-                }
+            if (disco && disco.isOffline) {
+                frameLoaded = false;
+                splash.classList.add('hidden');
+                frame.classList.add('hidden');
+                offline.classList.remove('hidden');
+                return;
             }
 
-            if (resolvedUrl) {
-                activeServerUrl = resolvedUrl;
-                localStorage.setItem('weather_server_tunnel_url', resolvedUrl);
-                const targetSrc = resolvedUrl + '/' + getLocQuery();
-                if (frame.src !== targetSrc) {
-                    frame.src = targetSrc;
+            if (disco && disco.url) {
+                const newUrl = disco.url;
+                if (newUrl !== activeServerUrl || !frame.src || frame.src.endsWith('/about:blank')) {
+                    activeServerUrl = newUrl;
+                    localStorage.setItem('weather_server_tunnel_url', newUrl);
+                    frame.src = newUrl + '/' + getLocQuery();
                 }
-
-                // Arka planda discovery doğrulaması (eğer storedAlive kullandıysak)
-                if (storedAlive) {
-                    pDiscovery.then(disco => {
-                        if (disco && disco.url && disco.url !== resolvedUrl) {
-                            activeServerUrl = disco.url;
-                            localStorage.setItem('weather_server_tunnel_url', disco.url);
-                            frame.src = disco.url + '/' + getLocQuery();
-                        }
-                    }).catch(() => {});
-                }
-            } else {
+            } else if (!activeServerUrl) {
+                // Tünel bulunamadı ve hafızada da yok
                 splash.classList.add('hidden');
                 offline.classList.remove('hidden');
             }
 
-            // Güvenlik zaman aşımı (5 saniye)
+            // Güvenlik zaman aşımı (3.5 saniye)
             setTimeout(() => {
                 if (!frameLoaded) {
-                    if (!resolvedUrl) {
+                    if (!activeServerUrl && (!disco || !disco.url)) {
                         splash.classList.add('hidden');
                         offline.classList.remove('hidden');
                     } else {
                         revealFrame();
                     }
                 }
-            }, 5000);
+            }, 3500);
         }
 
         async function forceRetry() {
