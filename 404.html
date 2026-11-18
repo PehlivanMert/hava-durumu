@@ -84,7 +84,7 @@
 
         <div class="text-center space-y-2 max-w-xs">
             <h2 id="splashTitle" class="text-base font-bold text-white tracking-wide">Hava Durumu Bağlanıyor...</h2>
-            <p id="splashSub" class="text-xs text-sky-400">PC tünel köprüsü çözülüyor</p>
+            <p id="splashSub" class="text-xs text-sky-400">Canlı tünel köprüsü çözülüyor</p>
         </div>
     </div>
 
@@ -100,42 +100,94 @@
                     Hava durumu motoru bilgisayarınızda çalışmaktadır. Bilgisayarınızı açtığınızda sistem otomatik olarak bağlanacaktır.
                 </p>
             </div>
-            <button onclick="connectToWeather(true)" class="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition active:scale-95 shadow-lg shadow-sky-600/25">
+            <button id="btnRetry" onclick="forceRetry()" class="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition active:scale-95 shadow-lg shadow-sky-600/25">
                 Yeniden Bağlanmayı Dene
             </button>
         </div>
     </div>
 
     <!-- Seamless Fullscreen Weather Iframe -->
-    <iframe id="weatherFrame" class="fixed inset-0 w-full h-full border-none z-10 hidden" style="height: 100dvh;" allow="geolocation"></iframe>
+    <iframe id="weatherFrame" class="fixed inset-0 w-full h-full border-none z-10 hidden" style="height: 100dvh;" allow="geolocation *; clipboard-write *"></iframe>
 
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js').catch(() => {});
+                navigator.serviceWorker.register('sw.js').then((reg) => {
+                    reg.update().catch(() => {});
+                }).catch(() => {});
             });
         }
 
         const NTFY_API_URL = "https://ntfy.sh/didim_weather_mert_tunnel_6f031/json?poll=1";
+        const GIST_RAW_URL = "https://gist.githubusercontent.com/PehlivanMert/6f03183fd944b1e3babfd69e2e6baed0/raw/weather_tunnel.json";
         const GIST_API_URL = "https://api.github.com/gists/6f03183fd944b1e3babfd69e2e6baed0";
         let activeServerUrl = localStorage.getItem('weather_server_tunnel_url') || '';
+        let frameLoaded = false;
 
-        async function resolveLiveTunnelUrl(force = false) {
-            const now = Date.now();
-
-            // 1. Önce hafızadaki URL hala çalışıyor mu hızlıca sına (1.5 sn timeout)
-            if (!force && activeServerUrl) {
-                try {
-                    const testResp = await fetch(activeServerUrl + '/api/location', { signal: AbortSignal.timeout(1500) });
-                    if (testResp.ok) return activeServerUrl;
-                } catch (e) {
-                    // Cache'deki URL kapalı, ntfy ve Gist'e sor
-                }
+        function getLocQuery() {
+            const savedCity = localStorage.getItem('pwa_device_city');
+            const savedLat = localStorage.getItem('pwa_device_lat');
+            const savedLon = localStorage.getItem('pwa_device_lon');
+            if (savedLat && savedLon && savedCity) {
+                return `?lat=${savedLat}&lon=${savedLon}&city=${encodeURIComponent(savedCity)}`;
+            } else if (savedCity) {
+                return `?city=${encodeURIComponent(savedCity)}`;
             }
+            return '';
+        }
 
-            // 2. ntfy.sh Anlık Pub/Sub Köprüsü (Kotasız, en hızlı)
+        function revealFrame() {
+            if (frameLoaded) return;
+            frameLoaded = true;
+            const splash = document.getElementById('loadingSplash');
+            const frame = document.getElementById('weatherFrame');
+            if (splash) {
+                splash.classList.add('opacity-0');
+                setTimeout(() => splash.classList.add('hidden'), 150);
+            }
+            if (frame) frame.classList.remove('hidden');
+        }
+
+        const frameEl = document.getElementById('weatherFrame');
+        if (frameEl) {
+            frameEl.onload = () => {
+                if (frameEl.src && !frameEl.src.endsWith('/about:blank')) {
+                    revealFrame();
+                }
+            };
+        }
+
+        async function pingUrl(url, timeoutMs = 1800) {
+            if (!url || !url.startsWith('https://')) return false;
             try {
-                const resp = await fetch(`${NTFY_API_URL}&_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                const res = await fetch(url + '/api/location?_t=' + Date.now(), {
+                    method: 'GET',
+                    mode: 'cors',
+                    signal: AbortSignal.timeout(timeoutMs)
+                });
+                return res.ok;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        async function fetchTunnelFromGistRaw() {
+            try {
+                const resp = await fetch(`${GIST_RAW_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data) {
+                        const tun = (data.tunnel || "").trim().replace(/\/+$/, '');
+                        return { url: tun, time: data.updated || 0 };
+                    }
+                }
+            } catch(e) {}
+            return null;
+        }
+
+        async function fetchTunnelFromNtfy() {
+            try {
+                const resp = await fetch(`${NTFY_API_URL}&_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
                 if (resp.ok) {
                     const text = await resp.text();
                     const lines = text.trim().split("\n").filter(l => l.trim().length > 0);
@@ -143,43 +195,68 @@
                         .map(l => { try { return JSON.parse(l); } catch(e) { return null; } })
                         .filter(m => m && m.event === "message" && m.message);
                     if (messages.length > 0) {
-                        const lastMsg = messages[messages.length - 1];
-                        const msg = (lastMsg.message || "").trim();
+                        const last = messages[messages.length - 1];
+                        const msg = (last.message || "").trim();
+                        if (msg === "OFFLINE") {
+                            return { isOffline: true, time: last.time || 0 };
+                        }
                         if (msg.startsWith("https://") && msg.includes("trycloudflare.com")) {
-                            activeServerUrl = msg.replace(/\/+$/, '');
-                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
-                            return activeServerUrl;
-                        } else if (msg === "OFFLINE") {
-                            activeServerUrl = '';
-                            localStorage.removeItem('weather_server_tunnel_url');
-                            return null;
+                            return { url: msg.replace(/\/+$/, ''), time: last.time || 0 };
                         }
                     }
                 }
-            } catch (e) {}
+            } catch(e) {}
+            return null;
+        }
 
-            // 3. Yedek: GitHub Gist API Sorgusu
+        async function fetchTunnelFromGistApi() {
             try {
-                const resp = await fetch(`${GIST_API_URL}?_t=${now}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+                const resp = await fetch(`${GIST_API_URL}?_t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
                 if (resp.ok) {
                     const data = await resp.json();
                     const file = data.files && data.files["weather_tunnel.json"];
                     if (file && file.content) {
                         const parsed = JSON.parse(file.content);
-                        if (parsed && parsed.tunnel && parsed.tunnel.startsWith("https://")) {
-                            activeServerUrl = parsed.tunnel.trim().replace(/\/+$/, '');
-                            localStorage.setItem('weather_server_tunnel_url', activeServerUrl);
-                            return activeServerUrl;
-                        } else {
-                            activeServerUrl = '';
-                            localStorage.removeItem('weather_server_tunnel_url');
-                            return null;
+                        if (parsed) {
+                            const tun = (parsed.tunnel || "").trim().replace(/\/+$/, '');
+                            return { url: tun, time: parsed.updated || 0 };
                         }
                     }
                 }
-            } catch (e) {}
+            } catch(e) {}
+            return null;
+        }
 
-            return activeServerUrl || null;
+        async function discoverLiveTunnel() {
+            // Paralel sorgulama: ntfy ve Gist
+            const [rNtfy, rGistRaw] = await Promise.allSettled([
+                fetchTunnelFromNtfy(),
+                fetchTunnelFromGistRaw()
+            ]);
+
+            const ntfy = rNtfy.status === 'fulfilled' ? rNtfy.value : null;
+            let gist = rGistRaw.status === 'fulfilled' ? rGistRaw.value : null;
+
+            if (!gist || !gist.url) {
+                try {
+                    gist = await fetchTunnelFromGistApi();
+                } catch(e) {}
+            }
+
+            if (ntfy && ntfy.isOffline) {
+                return { isOffline: true };
+            }
+
+            let bestUrl = null;
+            if (ntfy && ntfy.url && gist && gist.url) {
+                bestUrl = (ntfy.time >= gist.time) ? ntfy.url : gist.url;
+            } else if (ntfy && ntfy.url) {
+                bestUrl = ntfy.url;
+            } else if (gist && gist.url) {
+                bestUrl = gist.url;
+            }
+
+            return { url: bestUrl };
         }
 
         async function connectToWeather(force = false) {
@@ -188,40 +265,126 @@
             const frame = document.getElementById('weatherFrame');
 
             offline.classList.add('hidden');
-            splash.classList.remove('hidden', 'opacity-0');
 
-            document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
-            document.getElementById('splashSub').innerText = 'Aktif tünel çözümleniyor';
+            if (!activeServerUrl || force) {
+                splash.classList.remove('hidden', 'opacity-0');
+                document.getElementById('splashTitle').innerText = 'Bağlantı Kuruluyor...';
+                document.getElementById('splashSub').innerText = 'Canlı tünel aranıyor';
+            }
 
-            const tunnelUrl = await resolveLiveTunnelUrl(force);
+            let resolvedUrl = null;
 
-            if (tunnelUrl) {
-                document.getElementById('splashTitle').innerText = 'Bağlantı Kuruldu!';
-                document.getElementById('splashSub').innerText = 'Hava durumu raporu yükleniyor...';
+            // 1. Stored URL hızlı kontrolü (hafızadaki URL hala ayakta mı?)
+            const storedUrl = (!force && activeServerUrl) ? activeServerUrl : null;
+            const pStoredPing = storedUrl ? pingUrl(storedUrl, 1600).then(alive => alive ? storedUrl : null) : Promise.resolve(null);
+            const pDiscovery = discoverLiveTunnel();
 
-                // Iframe yükleme tamamlanınca splash'i kapat
-                frame.src = tunnelUrl;
-                frame.onload = () => {
-                    setTimeout(() => {
-                        splash.classList.add('opacity-0');
-                        setTimeout(() => splash.classList.add('hidden'), 300);
-                        frame.classList.remove('hidden');
-                    }, 400);
-                };
-                
-                // Güvenlik zamanlayıcısı (en geç 3 saniyede göster)
-                setTimeout(() => {
-                    splash.classList.add('opacity-0');
-                    setTimeout(() => splash.classList.add('hidden'), 300);
-                    frame.classList.remove('hidden');
-                }, 3000);
+            const storedAlive = await pStoredPing;
+            if (storedAlive) {
+                resolvedUrl = storedAlive;
+            } else {
+                const disco = await pDiscovery;
+                if (disco && disco.isOffline) {
+                    splash.classList.add('hidden');
+                    offline.classList.remove('hidden');
+                    return;
+                }
+                if (disco && disco.url) {
+                    resolvedUrl = disco.url;
+                }
+            }
+
+            if (resolvedUrl) {
+                activeServerUrl = resolvedUrl;
+                localStorage.setItem('weather_server_tunnel_url', resolvedUrl);
+                const targetSrc = resolvedUrl + '/' + getLocQuery();
+                if (frame.src !== targetSrc) {
+                    frame.src = targetSrc;
+                }
+
+                // Arka planda discovery doğrulaması (eğer storedAlive kullandıysak)
+                if (storedAlive) {
+                    pDiscovery.then(disco => {
+                        if (disco && disco.url && disco.url !== resolvedUrl) {
+                            activeServerUrl = disco.url;
+                            localStorage.setItem('weather_server_tunnel_url', disco.url);
+                            frame.src = disco.url + '/' + getLocQuery();
+                        }
+                    }).catch(() => {});
+                }
             } else {
                 splash.classList.add('hidden');
                 offline.classList.remove('hidden');
             }
+
+            // Güvenlik zaman aşımı (5 saniye)
+            setTimeout(() => {
+                if (!frameLoaded) {
+                    if (!resolvedUrl) {
+                        splash.classList.add('hidden');
+                        offline.classList.remove('hidden');
+                    } else {
+                        revealFrame();
+                    }
+                }
+            }, 5000);
         }
 
-        window.addEventListener('load', () => connectToWeather(false));
+        async function forceRetry() {
+            const btn = document.getElementById('btnRetry');
+            if (btn) btn.innerText = 'Önbellek Temizlenip Bağlanılıyor...';
+            try {
+                if ('caches' in window) {
+                    const keys = await caches.keys();
+                    for (const k of keys) await caches.delete(k);
+                }
+                if ('serviceWorker' in navigator) {
+                    const regs = await navigator.serviceWorker.getRegistrations();
+                    for (const r of regs) await r.unregister();
+                }
+            } catch(e) {}
+            localStorage.removeItem('weather_server_tunnel_url');
+            window.location.href = window.location.pathname + '?_fresh=' + Date.now();
+        }
+
+        // Apple iOS PWA / Iframe Geolocation & Multi-User Location Sync Bridge
+        window.addEventListener('message', (event) => {
+            if (!event.data) return;
+            if (event.data.type === 'SAVE_DEVICE_LOCATION') {
+                if (event.data.city) localStorage.setItem('pwa_device_city', event.data.city);
+                if (event.data.lat) localStorage.setItem('pwa_device_lat', event.data.lat);
+                if (event.data.lon) localStorage.setItem('pwa_device_lon', event.data.lon);
+            } else if (event.data.type === 'REQUEST_GEOLOCATION') {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            const frame = document.getElementById('weatherFrame');
+                            if (frame && frame.contentWindow) {
+                                frame.contentWindow.postMessage({
+                                    type: 'GEOLOCATION_SUCCESS',
+                                    latitude: pos.coords.latitude,
+                                    longitude: pos.coords.longitude
+                                }, '*');
+                            }
+                        },
+                        (err) => {
+                            const frame = document.getElementById('weatherFrame');
+                            if (frame && frame.contentWindow) {
+                                frame.contentWindow.postMessage({
+                                    type: 'GEOLOCATION_ERROR',
+                                    code: err.code,
+                                    message: err.message
+                                }, '*');
+                            }
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+                    );
+                }
+            }
+        });
+
+        // Başlat
+        connectToWeather(false);
     </script>
 </body>
 </html>
